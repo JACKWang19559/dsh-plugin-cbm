@@ -1,0 +1,6 @@
+{
+  "meta": {
+    "title": "CBM Lens",
+    "description": "codebase-memory-mcp 的本地代码知识图谱：提供 17 个 MCP 工具用于索引与查询仓库，并通过系统提示策略让 agent 默认以图谱优先方式探索代码；侧栏面板内嵌其二进制自带的 CBM Lens 可视化界面（127.0.0.1:9749）。"
+  }
+}

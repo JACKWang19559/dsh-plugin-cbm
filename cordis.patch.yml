@@ -1,0 +1,12 @@
+- insert:
+    - id: cbm-mcp
+      name: '@deepseek-ai/dsh-mcp-client'
+      config:
+        serverName: cbm
+        transport: stdio
+        command: !!js '`${process.env.LOCALAPPDATA}\\Programs\\codebase-memory-mcp\\codebase-memory-mcp.exe`'
+        args: ['--ui=true', '--port=9749']
+        toolCallTimeoutMs: 600000
+        failOnStartupError: true
+    - id: dsh-plugin-cbm
+      name: '@local/dsh-plugin-cbm'

@@ -1,0 +1,6 @@
+# local diagnostics, not part of the distributed plugin
+tools/
+
+# OS / editor
+.DS_Store
+Thumbs.db

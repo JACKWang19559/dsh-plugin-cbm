@@ -1,0 +1,6 @@
+{
+  "meta": {
+    "title": "CBM Lens",
+    "description": "Local code knowledge graph from codebase-memory-mcp: 17 MCP tools for indexing and querying repositories, a system-prompt policy that makes agents explore code graph-first by default, and the CBM Lens visualization panel embedded from the binary's own UI at 127.0.0.1:9749."
+  }
+}
