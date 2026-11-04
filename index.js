@@ -22,6 +22,44 @@ const PROXY_HOST = '127.0.0.1';
 // rewrite takes the next port to stay side-by-side safe.
 const PROXY_PORT = 9751;
 
+// Compact-chrome stylesheet for the session-tab embed. Hides Lens's global
+// navigation, sub-tabs, breadcrumb, status bar, and hints so the Architecture
+// plan map plus the Browse-map tree fill the tab. All selectors target Lens's
+// data-testid attributes (stable within the beta, version-tolerant enough);
+// misses degrade to the full UI.
+const EMBED_CSS = [
+  '[data-testid="atlas-header"]{display:none!important}',
+  '[data-testid="atlas-tabs-bar"]{display:none!important}',
+  '[data-testid="atlas-statusbar"]{display:none!important}',
+  '[data-testid="atlas-breadcrumb"]{display:none!important}',
+  '[data-testid="atlas-hint"]{display:none!important}',
+  '[data-testid="atlas-coverage-note"]{display:none!important}',
+  'html,body{height:100%!important;margin:0!important;overflow:hidden!important}',
+].join('\n');
+
+// One-shot Plan-projection switcher for the embed. Lens persists the planar
+// choice per project itself once switched, so this only bridges the first
+// load. Bounded (≈16s), idempotent, and re-dispatches resize so the canvas
+// fits the iframe after the chrome is hidden.
+const EMBED_JS = [
+  '(function(){',
+  '  function fit(){try{window.dispatchEvent(new Event("resize"))}catch(e){}}',
+  '  var tries=0,done=false;',
+  '  var timer=setInterval(function(){',
+  '    if(done)return;tries++;fit();',
+  '    var s=document.querySelector(\'[data-testid="architecture-scene"]\');',
+  '    if(!s)return;',
+  '    if(s.getAttribute("data-projection")==="3d"){',
+  '      var b=document.querySelectorAll("button");',
+  '      for(var i=0;i<b.length;i++){',
+  '        if((b[i].textContent||"").trim()==="Plan"){b[i].click();break}',
+  '      }',
+  '    }else if(s.getAttribute("data-projection")==="plan"){done=true;clearInterval(timer);fit()}',
+  '    if(tries>40)clearInterval(timer);',
+  '  },400);',
+  '})();',
+].join('\n');
+
 function startLensProxy(log) {
   const server = http.createServer((req, res) => {
     // Private Network Access preflight. The Desktop loads the GUI from the
@@ -76,6 +114,31 @@ function startLensProxy(log) {
         // Real statuses for the panel's CORS health probe, plus PNA consent.
         headers['access-control-allow-origin'] = '*';
         headers['access-control-allow-private-network'] = 'true';
+
+        // Session-tab "project pulse" embed: HTML documents requested with
+        // the dshembed marker get a compact-chrome stylesheet plus a one-shot
+        // Plan-projection switcher injected. Selectors use Lens's stable
+        // data-testid attributes; a Lens upgrade that renames them simply
+        // falls back to the full UI.
+        const wantsEmbed = /(?:^|[?&])dshembed=1(?:&|$)/.test(String(req.url || ''));
+        const isHtml = /text\/html/i.test(String(headers['content-type'] || ''));
+        if (wantsEmbed && isHtml && (up.statusCode ?? 200) === 200) {
+          const chunks = [];
+          up.on('data', (c) => chunks.push(c));
+          up.on('end', () => {
+            let body = Buffer.concat(chunks).toString('utf8');
+            const injection =
+              '<style id="dsh-embed-css">' + EMBED_CSS + '</style>' +
+              '<script id="dsh-embed-js">' + EMBED_JS + '</' + 'script>';
+            if (body.includes('</head>')) body = body.replace('</head>', injection + '</head>');
+            else body = injection + body;
+            headers['content-length'] = String(Buffer.byteLength(body, 'utf8'));
+            res.writeHead(up.statusCode ?? 200, headers);
+            res.end(body);
+          });
+          return;
+        }
+
         res.writeHead(up.statusCode ?? 502, headers);
         up.pipe(res);
       },

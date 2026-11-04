@@ -33,6 +33,16 @@ window.__ModuleLoader__.load({
         'status.down.diag': 'Probe result',
         'action.open': 'Open in browser',
         'action.retry': 'Retry',
+        'view.lens': 'CBM Lens',
+        'tab.loading': 'Loading project graph…',
+        'tab.noproject': 'This workspace has no code-graph index yet',
+        'tab.noproject.hint':
+          'Ask the agent to index it (say "index <path>"), or add it from the CBM Lens panel in the sidebar (Alt+P → Add project index).',
+        'tab.nocwd': 'This session has no workspace directory',
+        'tab.refresh': 'Refresh',
+        'tab.openFull': 'Full view',
+        'tab.counts': '{n} nodes · {e} edges',
+        'tab.indexedAt': 'indexed',
       },
       zh: {
         title: 'CBM Lens',
@@ -45,6 +55,16 @@ window.__ModuleLoader__.load({
         'status.down.diag': '探测结果',
         'action.open': '在浏览器中打开',
         'action.retry': '重试',
+        'view.lens': 'CBM Lens',
+        'tab.loading': '正在加载项目图谱…',
+        'tab.noproject': '当前工作区还没有代码图谱索引',
+        'tab.noproject.hint':
+          '让助手索引它（对我说"索引一下这个目录"），或在侧栏 CBM Lens 面板中添加（Alt+P → Add project index）。',
+        'tab.nocwd': '此会话没有工作区目录',
+        'tab.refresh': '刷新',
+        'tab.openFull': '完整版',
+        'tab.counts': '{n} 节点 · {e} 边',
+        'tab.indexedAt': '索引于',
       },
     };
 
@@ -124,7 +144,7 @@ window.__ModuleLoader__.load({
     };
 
     return {
-      inject: ['slots', 'locale'],
+      inject: ['slots', 'locale', 'layout'],
       apply(ctx) {
         const t = makeT(ctx);
 
@@ -296,6 +316,255 @@ window.__ModuleLoader__.load({
 
         ctx.slots.inject('main', () => {
           const reg = ctx.slots.register({ name: 'main', key: 'cbm-lens' }, LensPanel);
+          return () => { if (typeof reg === 'function') reg(); };
+        });
+
+        // Normalize a filesystem path for matching: forward slashes, no
+        // trailing slash, case-insensitive (Windows-friendly).
+        function normPath(p) {
+          return String(p || '').replace(/\\/g, '/').replace(/\/+$/, '').toLowerCase();
+        }
+
+        // POST one MCP tool call through the proxy's /rpc endpoint.
+        function rpcCall(name, args, signal) {
+          return fetch(PROXY_URL + '/rpc', {
+            method: 'POST',
+            mode: 'cors',
+            cache: 'no-store',
+            headers: { 'content-type': 'application/json' },
+            signal,
+            body: JSON.stringify({
+              jsonrpc: '2.0',
+              id: 1,
+              method: 'tools/call',
+              params: { name, arguments: args || {} },
+            }),
+          }).then((res) => {
+            if (!res.ok) throw new Error('HTTP ' + res.status);
+            return res.json();
+          });
+        }
+
+        function structOf(rpcResult) {
+          return (rpcResult && rpcResult.result && rpcResult.result.structuredContent) || null;
+        }
+
+        // Resolve the session workspace (cwd) to a cbm project via the
+        // proxy's MCP-over-HTTP endpoint, then deep-link Lens to it.
+        function LensTabView(props) {
+          const sessionId = props && props.sessionId;
+          const useSessions = props && props.useSessions;
+          // Selector hook when the view system provides it; snapshot otherwise.
+          // (Same pattern as shipped ui-chat / ui-open-in-app views.)
+          const hookedCwd = useSessions
+            ? useSessions((s) => { const row = s.byId[sessionId]; return row ? row.cwd : undefined; })
+            : undefined;
+          let cwd = hookedCwd;
+          if (cwd === undefined) {
+            try {
+              const snap = ctx.sessions && ctx.sessions.list && ctx.sessions.list.getSnapshot();
+              const row = snap && snap.byId[sessionId];
+              cwd = row ? row.cwd : undefined;
+            } catch (_) { /* leave undefined */ }
+          }
+
+          // loading | ready | noproject | nocwd | down
+          const [state, setState] = useState('loading');
+          const [project, setProject] = useState(null);
+          const [diag, setDiag] = useState('');
+          const [status, setStatus] = useState(null); // index_status structured content
+          const [statusNonce, setStatusNonce] = useState(0); // refresh button
+          const [frameNonce, setFrameNonce] = useState(0); // iframe reload
+
+          useEffect(() => {
+            const controller = new AbortController();
+            if (cwd === undefined) { setState('nocwd'); return () => controller.abort(); }
+            const run = async () => {
+              try {
+                const data = structOf(await rpcCall('list_projects', { format: 'json' }, controller.signal));
+                const projects = (data && data.projects) || [];
+                const target = normPath(cwd);
+                // Bidirectional match between the session workspace (cwd) and
+                // indexed project roots. A workspace often IS the repo root,
+                // but can also be a parent of it (workspace = folder holding
+                // the repo) or live inside one.
+                // kind 3: exact; 2: cwd inside project (deepest root wins);
+                // 1: project inside cwd (shallowest root wins).
+                let best = null;
+                let bestKind = 0;
+                let bestLen = -1;
+                for (const p of projects) {
+                  const root = normPath(p.root_path);
+                  if (!root) continue;
+                  if (root === target) { best = p; bestKind = 3; break; }
+                  if (target.startsWith(root + '/')) {
+                    if (bestKind < 2) { best = p; bestKind = 2; bestLen = root.length; }
+                    else if (bestKind === 2 && root.length > bestLen) { best = p; bestLen = root.length; }
+                  } else if (root.startsWith(target + '/')) {
+                    if (bestKind === 0) { best = p; bestKind = 1; bestLen = root.length; }
+                    else if (bestKind === 1 && root.length < bestLen) { best = p; bestLen = root.length; }
+                  }
+                }
+                if (best) { setProject(best); setState('ready'); }
+                else setState('noproject');
+              } catch (e) {
+                if (controller.signal.aborted) return;
+                setDiag(String((e && e.message) || e));
+                setState('down');
+              }
+            };
+            run();
+            return () => controller.abort();
+          }, [cwd]);
+
+          // Header-strip facts for the matched project.
+          useEffect(() => {
+            if (!project) return;
+            const controller = new AbortController();
+            rpcCall('index_status', { project: project.name, format: 'json' }, controller.signal)
+              .then((r) => { setStatus(structOf(r)); })
+              .catch(() => { if (!controller.signal.aborted) setStatus(null); });
+            return () => controller.abort();
+          }, [project && project.name, statusNonce]);
+
+          const stripButtonStyle = {
+            display: 'inline-flex', alignItems: 'center', justifyContent: 'center',
+            padding: '2px 10px', borderRadius: 6, cursor: 'pointer', fontSize: 12,
+            color: 'var(--dsw-alias-label-primary)',
+            backgroundColor: 'var(--dsw-alias-bg-layer-1)',
+            border: '1px solid var(--dsw-alias-border-l1)',
+            textDecoration: 'none', whiteSpace: 'nowrap',
+          };
+          const secondary = { color: 'var(--dsw-alias-label-secondary)' };
+
+          if (state === 'ready' && project) {
+            const ok = !status || status.status === 'ready';
+            const indexedAt = status && status.indexed_at
+              ? new Date(status.indexed_at).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
+              : '';
+            const counts = status && typeof status.nodes === 'number'
+              ? t('tab.counts').replace('{n}', String(status.nodes)).replace('{e}', String(status.edges))
+              : '';
+            const openFull = () => {
+              try {
+                if (ctx.layout && typeof ctx.layout.selectPanel === 'function') {
+                  ctx.layout.selectPanel('cbm-lens');
+                  return;
+                }
+              } catch (_) { /* fall through */ }
+              window.open(DIRECT_URL + '/?project=' + encodeURIComponent(project.name), '_blank', 'noopener');
+            };
+            return h('div', {
+              style: {
+                width: '100%', height: '100%', display: 'flex', flexDirection: 'column',
+                backgroundColor: 'var(--dsw-alias-bg-base)',
+              },
+            },
+              h('div', {
+                style: {
+                  display: 'flex', alignItems: 'center', gap: 12, flex: '0 0 auto',
+                  height: 36, padding: '0 12px', boxSizing: 'border-box',
+                  borderBottom: '1px solid var(--dsw-alias-border-l1)',
+                  fontSize: 12, color: 'var(--dsw-alias-label-primary)',
+                  overflow: 'hidden', whiteSpace: 'nowrap',
+                },
+              },
+                h('span', { key: 'name', style: { fontWeight: 600 } }, project.name),
+                project.branch && h('span', { key: 'branch', style: secondary }, project.branch),
+                h('span', {
+                  key: 'dot',
+                  title: status ? String(status.status) : '',
+                  style: {
+                    width: 8, height: 8, borderRadius: '50%', flex: '0 0 auto',
+                    backgroundColor: ok
+                      ? 'var(--dsw-alias-state-success-primary)'
+                      : 'var(--dsw-alias-state-warn-primary)',
+                  },
+                }),
+                counts && h('span', { key: 'counts', style: secondary }, counts),
+                indexedAt && h('span', { key: 'at', style: secondary }, t('tab.indexedAt') + ' ' + indexedAt),
+                h('span', { key: 'spacer', style: { flex: 1 } }),
+                h('button', {
+                  key: 'refresh', type: 'button', style: stripButtonStyle,
+                  onClick: () => { setStatusNonce((n) => n + 1); setFrameNonce((n) => n + 1); },
+                }, t('tab.refresh')),
+                h('button', { key: 'full', type: 'button', style: stripButtonStyle, onClick: openFull },
+                  t('tab.openFull') + ' ↗')),
+              h('iframe', {
+                key: 'frame-' + frameNonce,
+                src: PROXY_URL + '/?project=' + encodeURIComponent(project.name) +
+                  '&workspace=architecture&dshembed=1',
+                title: t('title'),
+                allow: 'fullscreen',
+                style: {
+                  width: '100%', flex: 1, minHeight: 0, border: 'none', display: 'block',
+                  backgroundColor: 'var(--dsw-alias-bg-base)',
+                },
+              }));
+          }
+
+          const head =
+            state === 'nocwd' ? t('tab.nocwd') :
+            state === 'noproject' ? t('tab.noproject') :
+            state === 'down' ? t('status.down') :
+            t('tab.loading');
+          const children = [h('div', { key: 'head', style: { fontSize: 15, fontWeight: 600 } }, head)];
+          if (state === 'noproject') {
+            children.push(
+              h('div', {
+                key: 'path',
+                style: {
+                  fontSize: 12, fontFamily: 'ui-monospace, Consolas, monospace',
+                  padding: '4px 10px', borderRadius: 6, maxWidth: '80%',
+                  color: 'var(--dsw-alias-label-secondary)',
+                  backgroundColor: 'var(--dsw-alias-bg-layer-2)',
+                  border: '1px solid var(--dsw-alias-border-l1)',
+                  wordBreak: 'break-all',
+                },
+              }, cwd),
+              h('div', {
+                key: 'hint',
+                style: { fontSize: 13, lineHeight: 1.7, maxWidth: 520, color: 'var(--dsw-alias-label-secondary)' },
+              }, t('tab.noproject.hint')));
+          }
+          if (state === 'down') {
+            children.push(
+              h('div', {
+                key: 'hint',
+                style: { fontSize: 13, lineHeight: 1.7, maxWidth: 520, color: 'var(--dsw-alias-label-secondary)' },
+              }, t('status.down.hint')),
+              diag && h('div', {
+                key: 'diag',
+                style: {
+                  fontSize: 11, maxWidth: 560, wordBreak: 'break-all',
+                  color: 'var(--dsw-alias-label-secondary)', direction: 'ltr',
+                },
+              }, t('status.down.diag') + ': ' + diag),
+              h('a', {
+                key: 'open', href: DIRECT_URL + '/', target: '_blank', rel: 'noopener noreferrer',
+                style: buttonStyle,
+              }, t('action.open')));
+          }
+          return h('div', {
+            style: {
+              width: '100%', height: '100%', display: 'flex', flexDirection: 'column',
+              alignItems: 'center', justifyContent: 'center', gap: 12,
+              backgroundColor: 'var(--dsw-alias-bg-base)',
+              color: 'var(--dsw-alias-label-primary)',
+              padding: 24, boxSizing: 'border-box', textAlign: 'center',
+            },
+          }, children);
+        }
+
+        // A per-session "CBM Lens" tab right after 轨迹 (Trajectory, order 10).
+        ctx.slots.inject('conversation.view', () => {
+          const reg = ctx.slots.register({
+            name: 'conversation.view',
+            id: 'cbm-lens',
+            order: 15,
+            locale: NS,
+            label: () => t('view.lens'),
+          }, LensTabView);
           return () => { if (typeof reg === 'function') reg(); };
         });
       },

@@ -14,8 +14,19 @@
 |---|---|
 | **MCP 工具接入** | `cordis.patch.yml` 插入 `@deepseek-ai/dsh-mcp-client`(stdio)连接本地 `codebase-memory-mcp.exe --ui=true --port=9749`,工具名 `mcp__cbm__*`(search_graph / trace_path / get_code_snippet / detect_changes 等 17 个) |
 | **图谱优先策略** | `index.js` 注册系统提示区段 `cbm:code-exploration-policy`:所有会话默认先用图谱查询代替 grep/逐文件读,附带覆盖核验、防"图里没有=不存在"误判等护栏 |
-| **CBM Lens 面板** | `client.js` 注册 `sidebar.panellist` 图标 + `main` 中央面板,iframe 内嵌 Lens;健康探测(带诊断输出)、启动期快速重试、乐观渲染兜底、浏览器逃生链接 |
-| **Loopback 反代** | `index.js` 在 `127.0.0.1:9751` 起透明代理转发 Lens,解开三道嵌入防线(见下文),Lens 本体 9749 零改动 |
+| **CBM Lens 面板** | `client.js` 注册 `sidebar.panellist` 图标 + `main` 中央面板,iframe 内嵌 Lens 完整版;健康探测(带诊断输出)、启动期快速重试、乐观渲染兜底、浏览器逃生链接 |
+| **会话标签页速览** | 每个会话头部"对话 / 轨迹 / **CBM Lens**"第三个标签(v1.5.0):原生信息条(项目 · 分支 · 状态点 · 节点/边数 · 索引时间 · 刷新/完整版)+ 精简嵌入的 Architecture **Plan 2D 图 + Browse map** |
+| **Loopback 反代** | `index.js` 在 `127.0.0.1:9751` 起透明代理转发 Lens,解开三道嵌入防线(见下文);对 `dshembed=1` 的 HTML 注入精简外壳 CSS + 一次性 Plan 切换脚本,Lens 本体 9749 零改动 |
+
+## 会话标签页"项目速览"(v1.5.0)
+
+每个会话(按其工作区)自动定位所属 cbm 项目,标签页内呈现:
+
+- **信息条**(原生 React,主题 token):项目名 · 分支 · 状态点 · 节点/边数 · 索引时间,右侧 [刷新] [完整版 ↗](完整版一键跳侧栏完整面板,`ctx.layout.selectPanel`)
+- **图面**:iframe 指向 `?project=<名>&workspace=architecture&dshembed=1`,代理为该 HTML 注入:
+  - 精简 CSS——隐藏 `atlas-header`(全局导航)/`atlas-tabs-bar`(子页签)/`atlas-statusbar`/`atlas-breadcrumb` 等,**只留 Plan 图 + Browse map(atlas-tree)**,全部选择器用 Lens 稳定的 `data-testid`,升级漂移时优雅降级回完整 UI
+  - 一次性 JS——检测 `architecture-scene` 为 3d 时程序化点击 "Plan"(Lens 自身按项目持久化该选择),并派发 resize 让画布贴合 iframe
+- **项目匹配**:会话 cwd ↔ 索引根目录**双向匹配**(相等 > 工作区在项目内取最深 > 项目在工作区内取最浅),适配"工作区是仓库外层文件夹"的常见组织方式;未索引显示引导卡
 
 ## 三道嵌入防线(踩坑记录,最有价值的部分)
 
@@ -27,7 +38,7 @@ Lens 的 HTTP 服务有三层安全设计,直接 iframe 会得到空白面板。
 | 2 | DSH 桌面端 GUI 运行于特权 `dsh-app://` scheme,Chromium 视其为"公共"地址空间 → 对 loopback 的 fetch 触发 **Private Network Access 预检** | 页面内探测请求被拒(`Failed to fetch`),但 curl/PowerShell 一切正常(极易误诊) | 直接应答 OPTIONS 预检:`204` + `Access-Control-Allow-Private-Network: true` |
 | 3 | cbm 服务按 `Origin` 头拒绝跨源请求(CSRF 防护) | `HTTP 403`(探测能拿到状态码但被拒) | 转发前剥掉 `Origin` 头 |
 
-另:DSH 的 Host 插件模块修改后**热重载不会加载新模块代**(旧监听器可能泄漏端口),因此代理端口从 9750 迁到 9751 以便新旧共存;应用重启后旧实例自然释放。诊断脚本见 `tools/`(未随插件分发)。
+另:**DSH 的 Host 插件模块修改后,开关切换 / 重装 bundle 都不会热加载新模块代**(官方约定:替换已装包需重启加载新代;旧监听器还可能继续占端口)。因此 v1.3.0 把代理端口从 9750 迁到 9751 以便新旧共存;改了 `index.js` 后请重启 DSH 生效,只改 `client.js` 则 F5 刷新页面即可。诊断脚本见 `tools/`(未随插件分发)。
 
 ## 安装 / Install
 
@@ -47,7 +58,9 @@ Unblock-File .\install.ps1
 plugin_manager { action: install_bundle, target: "<本仓库克隆的绝对路径>" }
 ```
 
-重启 DSH 后生效:侧栏出现 CBM Lens 图标;agent 获得 `mcp__cbm__*` 工具。
+重启 DSH 后生效:侧栏出现 CBM Lens 图标;agent 获得 `mcp__cbm__*` 工具;会话头部出现 CBM Lens 标签。
+
+> **升级本插件后**:改了 `client.js` → F5 刷新即可;改了 `index.js`(Host)→ 需重启 DSH(见上文模块代说明)。
 
 ## 配置 / Configuration
 
