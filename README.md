@@ -4,7 +4,9 @@
 
 为 DeepSeek Harness(Windows 桌面端)集成 codebase-memory-mcp 的插件:会话常驻 17 个代码图谱 MCP 工具、系统提示注入"图谱优先"探索策略、侧栏面板内嵌 CBM Lens 可视化界面(前端完全复用 cbm 二进制自带 UI,零改写)。
 
-![panel screenshot placeholder](icon.svg)
+![CBM Lens Architecture 视图运行于 DSH 桌面端面板内](docs/screenshot-architecture.png)
+
+*CBM Lens(Explore / Galaxy / Architecture / ADR / Coverage / System)完整嵌入 DSH 侧栏面板——图为 superagent 项目的 3D 架构图(Repository Atlas · Overview)。*
 
 ## 它做了什么 / What it does
 
